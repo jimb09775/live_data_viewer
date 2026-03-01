@@ -12,7 +12,7 @@ from datetime import datetime
 
 # --- Constants ---
 NUM_POINTS = 400
-LOOPBACK_NUM_POINTS = 5 # CONFIG_LOOPBACK_NUM_POINTS
+
 POINT_SIZE = 6   # 2 bytes index + 4 bytes amplitude (single points only)
 HEADER_BYTE = 0xAA
 TRAILER_BYTE = 0xA0
@@ -33,8 +33,9 @@ FIXED_GRAPH_Y = True  # Set to True to fix Y axis, False for auto-scaling
 Y_LIMITS = (0, 200000)  # Used if FIXED_GRAPH_Y is True 
 
 # Loopback display settings
-LOOPBACK_START_POINT = -12  # CONFIG_LOOPBACK_START_POINT
-LOOPBACK_STEP = 2  # CONFIG_LOOPBACK_STEP
+LOOPBACK_START_POINT = -15 # CONFIG_LOOPBACK_START_POINT
+LOOPBACK_NUM_POINTS = 6 # CONFIG_LOOPBACK_NUM_POINTS
+LOOPBACK_STEP = 1  # CONFIG_LOOPBACK_STEP
 LOOPBACK_Y_LIMITS = (0, 300)  # Loopback typically has higher amplitudes
 
 
