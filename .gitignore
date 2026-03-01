@@ -1,0 +1,6 @@
+# Ignore all Excel files with the .xlsx extension
+*.xlsx
+*.csv
+
+# Ignore the entire 'data' directory
+data/
