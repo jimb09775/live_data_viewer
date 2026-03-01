@@ -227,7 +227,7 @@ class SerialReader:
 
 # ---  High-Performance GUI ---
 class LiveDataViewer(QtWidgets.QMainWindow):
-    def __init__(self, port="COM5", baud=2000000, debug=False, csv_mode=False, csv_file=None):
+    def __init__(self, port="COM7", baud=2000000, debug=False, csv_mode=False, csv_file=None):
         super().__init__()
         self.port = port
         self.baud = baud
