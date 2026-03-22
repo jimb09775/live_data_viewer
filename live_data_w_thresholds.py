@@ -26,11 +26,69 @@ START = (0* 0.0075) / RF_FACTOR
 STEP = 0.0075 / RF_FACTOR
 
 
-x_thresholds = [START, 0.04, 0.26, 1.5]
-y_thresholds =  [1000000, 150000, 500, 2]
+# --- Threshold LUT Loader ---
+def load_threshold_lut(h_file="threshold_lut.h", c_file="threshold_lut.c"):
+    """
+    Parse threshold_lut.h for start/step metadata and threshold_lut.c for the
+    amplitude array.  Returns (x_meters, y_amplitudes) ready for set_threshold_line().
+
+    Falls back to empty lists if either file is missing or malformed.
+    """
+    import re, os
+
+    # ---- parse header for start_mm and step_mm ----
+    start_mm = None
+    step_mm  = None
+    try:
+        with open(h_file, "r") as f:
+            header_text = f.read()
+        m = re.search(r"#define\s+THRESHOLD_LUT_START_MM\s+([\d.eE+\-]+)f?", header_text)
+        if m:
+            start_mm = float(m.group(1))
+        m = re.search(r"#define\s+THRESHOLD_LUT_STEP_MM\s+([\d.eE+\-]+)f?", header_text)
+        if m:
+            step_mm = float(m.group(1))
+    except FileNotFoundError:
+        print(f"⚠️  threshold LUT: '{h_file}' not found — threshold line disabled")
+        return None
+
+    if start_mm is None or step_mm is None:
+        print("⚠️  threshold LUT: could not parse START_MM / STEP_MM from header")
+        return None
+
+    # ---- parse .c file for array values (also returns raw int array for numpy use) ----
+    try:
+        with open(c_file, "r") as f:
+            c_text = f.read()
+    except FileNotFoundError:
+        print(f"⚠️  threshold LUT: '{c_file}' not found — threshold line disabled")
+        return None
+
+    # Extract everything between the opening { and closing };
+    m = re.search(r"g_threshold_lut\[.*?\]\s*=\s*\{(.*?)\};", c_text, re.DOTALL)
+    if not m:
+        print("⚠️  threshold LUT: could not locate array body in .c file")
+        return None
+
+    # Strip C comments and extract all integers
+    body = re.sub(r"/\*.*?\*/", "", m.group(1), flags=re.DOTALL)
+    values = [int(v.rstrip("U")) for v in re.findall(r"\b\d+U?\b", body)]
+
+    if not values:
+        print("⚠️  threshold LUT: no values found in array body")
+        return None
+
+    n = len(values)
+    lut_arr = np.array(values, dtype=np.float32)
+
+    print(f"✅  threshold LUT loaded: {n} points, amp {min(values)}–{max(values)}")
+    return lut_arr
 
 FIXED_GRAPH_Y = True  # Set to True to fix Y axis, False for auto-scaling
 Y_LIMITS = (0, 200000)  # Used if FIXED_GRAPH_Y is True 
+
+# Crossing detection — skip near-field clutter below this distance (match CONFIG_MIN_RANGE_MM)
+MIN_DETECTION_RANGE_MM = 100.0
 
 # Loopback display settings
 LOOPBACK_START_POINT = -15 # CONFIG_LOOPBACK_START_POINT
@@ -288,7 +346,7 @@ class LiveDataViewer(QtWidgets.QMainWindow):
         self.last_fps_time = time.time()
 
     def init__ui(self):
-        self.setWindowTitle(f"🚀 Live Data Viewer - {self.port}")
+        self.setWindowTitle(f"🚀 Live Data Viewer w/ Thresholds - {self.port}")
         self.setGeometry(100, 100, 1200, 800)
 
         central_widget = QtWidgets.QWidget()
@@ -318,8 +376,9 @@ class LiveDataViewer(QtWidgets.QMainWindow):
             autoDownsample=True
         )
 
-        self.threshold_x = x_thresholds
-        self.threshold_y = y_thresholds
+        self.threshold_x = []
+        self.threshold_y = []
+        self.threshold_lut_arr = None   # numpy array for crossing detection, set after load
         self.threshold_curve = self.plot_widget.plot(
             self.threshold_x,
             self.threshold_y,
@@ -327,6 +386,20 @@ class LiveDataViewer(QtWidgets.QMainWindow):
             antialias=False
         )
         self.threshold_visible = True
+
+        # --- Threshold crossing vertical line ---
+        self.crossing_line = pg.InfiniteLine(
+            pos=0.0,
+            angle=90,
+            pen=pg.mkPen(color='#ff6600', width=2, style=QtCore.Qt.SolidLine),
+            movable=False,
+            label='',
+        )
+        self.crossing_line.setVisible(False)   # hidden until a crossing is found
+        self.plot_widget.addItem(self.crossing_line)
+
+        self.crossing_label = pg.TextItem(text="", color='#ff6600', anchor=(0, 1))
+        self.plot_widget.addItem(self.crossing_label)
         
         # Add text items for temp and divisor display
 
@@ -564,6 +637,28 @@ class LiveDataViewer(QtWidgets.QMainWindow):
 
         if data_changed:
             self.curve.setData(self.range_values, self.display_data)
+
+            # --- Threshold crossing detection ---
+            if self.threshold_lut_arr is not None:
+                lut = self.threshold_lut_arr
+                n   = min(len(self.display_data), len(lut))
+                # Skip near-field clutter — only search from MIN_DETECTION_RANGE_MM onward
+                min_idx = int(np.searchsorted(self.range_values[:n] * 1000.0,
+                                              MIN_DETECTION_RANGE_MM))
+                # Find first index where amplitude exceeds the LUT threshold
+                crossings = np.where(self.display_data[min_idx:n] > lut[min_idx:n])[0]
+                if crossings.size > 0:
+                    cross_idx = min_idx + crossings[0]
+                    cross_x   = float(self.range_values[cross_idx])
+                    self.crossing_line.setValue(cross_x)
+                    self.crossing_line.setVisible(True)
+                    self.crossing_label.setText(f"  {cross_x*1000:.1f} mm")
+                    # Pin label to top of Y range so it doesn't drift with data
+                    y_top = Y_LIMITS[1] if FIXED_GRAPH_Y else float(np.max(self.display_data)) * 1.05
+                    self.crossing_label.setPos(cross_x, y_top)
+                else:
+                    self.crossing_line.setVisible(False)
+                    self.crossing_label.setText("")
             self.update_counter += 1
             self.fps_counter += 1
             
@@ -622,10 +717,14 @@ def _plot_loop(port="COM7", baud=2000000, debug=False, csv_mode=False, csv_file=
 
     viewer = LiveDataViewer(port=port, baud=baud, debug=debug, csv_mode=csv_mode, csv_file=csv_file)
     
-    # --- Example: Set initial threshold line ---
-    threshold_x = x_thresholds
-    threshold_y = y_thresholds
-    viewer.set_threshold_line(threshold_x, threshold_y)
+    # --- Load threshold from LUT files ---
+    # lut[i] maps directly to data[i] by index (per header comment), so use
+    # range_values as the x-axis — this guarantees pixel-perfect alignment.
+    threshold_lut_arr = load_threshold_lut()
+    if threshold_lut_arr is not None:
+        n = min(len(viewer.range_values), len(threshold_lut_arr))
+        viewer.set_threshold_line(viewer.range_values[:n], threshold_lut_arr[:n])
+        viewer.threshold_lut_arr = threshold_lut_arr
 
     viewer.show()
 
